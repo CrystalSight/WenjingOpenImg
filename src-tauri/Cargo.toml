@@ -1,0 +1,26 @@
+[package]
+name = "wenjing-image-plugin"
+version = "0.1.0"
+edition = "2021"
+
+# 参见 https://doc.rust-lang.org/cargo/reference/manifest.html 了解更多信息
+
+[build-dependencies]
+tauri-build = { version = "1.5", features = [] }
+
+[dependencies]
+tauri = { version = "1.5", features = ["shell-open", "dialog-all"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+rusqlite = { version = "0.30", features = ["bundled"] }
+reqwest = { version = "0.11", features = ["json"] }
+tokio = { version = "1.35", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+dirs = "5.0"
+chrono = "0.4"
+base64 = "0.21"
+
+[features]
+# 此功能用于自定义命令,如果您不需要可以删除
+custom-protocol = ["tauri/custom-protocol"]
