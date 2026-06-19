@@ -13,6 +13,7 @@ use project::{get_project_detail, check_shot_exists};
 use api_client::{ApiClient, ImageGenerationRequest};
 use batch_generator::{BatchGenerator, TaskUpdate};
 use tauri::command;
+use tauri::Manager; // 导入Manager trait以使用emit_all
 use tokio::sync::mpsc;
 
 /// 获取配置
@@ -176,6 +177,7 @@ async fn test_api_connection(
 /// 启动批量生图任务
 #[command]
 async fn start_batch_generation(
+    app: tauri::AppHandle,
     wenjing_root: String,
     project_id: i64,
     api_url: String,
@@ -212,10 +214,55 @@ async fn start_batch_generation(
         ).await
     });
     
-    // 实时推送事件到前端(简化实现,实际应该使用tauri的事件系统)
+    // 实时推送事件到前端
     while let Some(update) = receiver.recv().await {
         tracing::info!("任务更新: {:?}", update);
-        // TODO: 使用tauri::emit发送事件到前端
+        
+        // 将TaskUpdate转换为JSON并发送到前端
+        let event_name = "task-update";
+        let payload = match &update {
+            TaskUpdate::Started { shot_id, total } => {
+                serde_json::json!({
+                    "type": "Started",
+                    "shot_id": shot_id,
+                    "total": total
+                })
+            }
+            TaskUpdate::Success { shot_id, image_path } => {
+                serde_json::json!({
+                    "type": "Success",
+                    "shot_id": shot_id,
+                    "image_path": image_path
+                })
+            }
+            TaskUpdate::Failed { shot_id, error } => {
+                serde_json::json!({
+                    "type": "Failed",
+                    "shot_id": shot_id,
+                    "error": error
+                })
+            }
+            TaskUpdate::Skipped { shot_id, reason } => {
+                serde_json::json!({
+                    "type": "Skipped",
+                    "shot_id": shot_id,
+                    "reason": reason
+                })
+            }
+            TaskUpdate::Completed { success_count, failed_count, skipped_count } => {
+                serde_json::json!({
+                    "type": "Completed",
+                    "success_count": success_count,
+                    "failed_count": failed_count,
+                    "skipped_count": skipped_count
+                })
+            }
+        };
+        
+        // 发送事件到前端
+        if let Err(e) = app.emit_all(event_name, &payload) {
+            tracing::warn!("发送事件失败: {}", e);
+        }
     }
     
     // 等待任务完成

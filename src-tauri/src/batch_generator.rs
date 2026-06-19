@@ -10,7 +10,6 @@ use tracing;
 #[derive(Debug, Clone)]
 pub enum TaskUpdate {
     Started { shot_id: i64, total: usize },
-    Progress { shot_id: i64, current: usize },
     Success { shot_id: i64, image_path: String },
     Failed { shot_id: i64, error: String },
     Skipped { shot_id: i64, reason: String },
@@ -77,7 +76,7 @@ impl BatchGenerator {
         // 2. 遍历分镜,并发执行
         let mut tasks = Vec::new();
         
-        for (index, shot) in shots.iter().enumerate() {
+        for (_index, shot) in shots.iter().enumerate() {
             let shot_id = shot.id;
             let shot_prompt = shot.prompt.clone();
             let style = prompts.style.clone();
@@ -96,12 +95,8 @@ impl BatchGenerator {
                 // 获取并发许可
                 let _permit = controller_clone.acquire().await
                     .map_err(|e| format!("获取并发许可失败: {}", e))?;
-                
-                // 发送进度事件
-                sender_clone.send(TaskUpdate::Progress { 
-                    shot_id, 
-                    current: index + 1 
-                }).await.ok();
+
+                // 移除Progress事件,不再发送进度更新
                 
                 // 检查是否已存在图片
                 if project::check_shot_exists(&PathBuf::from("."), &project_folder_clone, shot_id) {
@@ -155,7 +150,7 @@ impl BatchGenerator {
         }
         
         // 3. 等待所有任务完成
-        for task in tasks {
+        for (task_index, task) in tasks.iter_mut().enumerate() {
             match task.await {
                 Ok(result) => {
                     match result {
@@ -169,12 +164,24 @@ impl BatchGenerator {
                         Err(e) => {
                             tracing::error!("任务执行失败: {}", e);
                             failed_count += 1;
+                            // 发送失败事件到前端
+                            let shot_id = shots[task_index].id;
+                            sender.send(TaskUpdate::Failed { 
+                                shot_id,
+                                error: e.clone() 
+                            }).await.ok();
                         }
                     }
                 }
                 Err(e) => {
                     tracing::error!("任务panic: {}", e);
                     failed_count += 1;
+                    // 发送失败事件到前端
+                    let shot_id = shots[task_index].id;
+                    sender.send(TaskUpdate::Failed { 
+                        shot_id,
+                        error: format!("任务异常: {}", e)
+                    }).await.ok();
                 }
             }
         }

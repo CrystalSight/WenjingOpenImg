@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react';
-import { Button, message, Space, Card, Typography, ConfigProvider, Table, Input, Select, InputNumber, Modal } from 'antd';
+import { Button, message, Space, Card, Typography, ConfigProvider, Table, Input, Select, InputNumber, Modal, Layout, Menu } from 'antd';
+import { SettingOutlined, PlayCircleOutlined, ToolOutlined } from '@ant-design/icons';
 import zhCN from 'antd/locale/zh_CN';
 import { open } from '@tauri-apps/api/dialog';
+import { listen } from '@tauri-apps/api/event';
 import { getConfig, selectWenjingRoot } from './api/config';
 import { exploreDatabase, getProjects, getShots, getShotFullPrompt } from './api/database';
 import { getProjectDetail, backupProject } from './api/project';
@@ -10,6 +12,7 @@ import { startBatchGeneration } from './api/batch';
 import type { AppConfig, TableInfo, ProjectInfo, ShotInfo } from './types';
 
 const { Title, Text } = Typography;
+const { Sider, Content } = Layout;
 
 function App() {
   const [config, setConfig] = useState<AppConfig | null>(null);
@@ -31,9 +34,48 @@ function App() {
   const [maxRetries, setMaxRetries] = useState<number>(3);
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
 
+  // 任务进度状态
+  interface TaskProgress {
+    currentShot?: number;
+    totalShots?: number;
+    successCount: number;
+    failedCount: number;
+    skippedCount: number;
+    status: 'idle' | 'running' | 'completed';
+  }
+
+  const [taskProgress, setTaskProgress] = useState<TaskProgress>({
+    successCount: 0,
+    failedCount: 0,
+    skippedCount: 0,
+    status: 'idle'
+  });
+
+  // 侧边栏导航状态
+  const [selectedMenuKey, setSelectedMenuKey] = useState<string>('config');
+
+  // 自定义模型参数状态
+  const [customParams, setCustomParams] = useState<string>('{}');
+  const [paramsError, setParamsError] = useState<string>('');
+
   useEffect(() => {
     loadConfig();
   }, []);
+
+  // 验证自定义参数的JSON格式
+  useEffect(() => {
+    if (!customParams.trim()) {
+      setParamsError('');
+      return;
+    }
+    
+    try {
+      JSON.parse(customParams);
+      setParamsError('');
+    } catch (e) {
+      setParamsError(`JSON格式错误: ${e instanceof Error ? e.message : '未知错误'}`);
+    }
+  }, [customParams]);
 
   const loadConfig = async () => {
     try {
@@ -261,15 +303,82 @@ function App() {
     if (!confirmed) return;
 
     setIsGenerating(true);
+    setTaskProgress({
+      successCount: 0,
+      failedCount: 0,
+      skippedCount: 0,
+      status: 'running'
+    });
+
+    let unlisten: (() => void) | undefined;
+
     try {
-      // 调用后端批量生图命令
+      // ✅ 第一步: 先注册事件监听器
+      unlisten = await listen('task-update', (event: any) => {
+        const update = event.payload;
+        
+        switch (update.type) {
+          case 'Started':
+            setTaskProgress(prev => ({
+              ...prev,
+              totalShots: update.total
+            }));
+            break;
+            
+          case 'Success':
+            setTaskProgress(prev => ({
+              ...prev,
+              successCount: prev.successCount + 1
+            }));
+            break;
+            
+          case 'Failed':
+            setTaskProgress(prev => ({
+              ...prev,
+              failedCount: prev.failedCount + 1
+            }));
+            break;
+            
+          case 'Skipped':
+            setTaskProgress(prev => ({
+              ...prev,
+              skippedCount: prev.skippedCount + 1
+            }));
+            break;
+            
+          case 'Completed':
+            setTaskProgress(prev => ({
+              ...prev,
+              status: 'completed'
+            }));
+            
+            // 显示最终结果,延长显示时间到5秒
+            if (update.failed_count === 0) {
+              message.success({
+                content: `批量生图完成! 成功:${update.success_count}, 跳过:${update.skipped_count}`,
+                duration: 5
+              });
+            } else {
+              message.warning({
+                content: `批量生图完成! 成功:${update.success_count}, 失败:${update.failed_count}, 跳过:${update.skipped_count}`,
+                duration: 5
+              });
+            }
+            
+            setIsGenerating(false);
+            unlisten?.();  // 取消监听
+            break;
+        }
+      });
+      
+      // ✅ 第二步: 再启动批量生图任务
       const taskId = await startBatchGeneration(
         config.wenjing_root,
         firstProject.id,
         apiUrl,
         apiKey || undefined,
         selectedModel,
-        '{}',  // 通用参数为空JSON对象
+        customParams || '{}',  // 使用用户输入的自定义参数
         concurrency,
         timeoutSecs,
         maxRetries
@@ -278,14 +387,223 @@ function App() {
       message.success(`批量生图任务已启动,任务ID: ${taskId}`);
       console.log('批量生图任务已启动:', taskId);
       
-      // TODO: 后续可以添加实时进度监听
     } catch (error) {
       message.error(`启动批量生图失败: ${error}`);
       console.error('批量生图错误:', error);
-    } finally {
       setIsGenerating(false);
+      setTaskProgress(prev => ({ ...prev, status: 'idle' }));
+      // 如果启动失败,也要取消监听
+      if (unlisten) {
+        unlisten();
+      }
     }
   };
+
+  // 渲染配置区域
+  const renderConfigSection = () => (
+    <Space direction="vertical" size="large" style={{ width: '100%' }}>
+      {/* 文镜根目录配置 */}
+      <Card title="文镜根目录">
+        <Space>
+          <Text>{config?.wenjing_root || '未设置'}</Text>
+          <Button onClick={handleSelectWenjingRoot}>
+            选择目录
+          </Button>
+        </Space>
+      </Card>
+      
+      {/* API配置 */}
+      <Card title="API配置">
+        <Space direction="vertical" style={{ width: '100%' }} size="middle">
+          <div>
+            <label style={{ display: 'block', marginBottom: 8 }}>API地址:</label>
+            <Input
+              placeholder="例如: https://api.example.com/v1/images/generations"
+              value={apiUrl}
+              onChange={(e) => setApiUrl(e.target.value)}
+            />
+          </div>
+          
+          <div>
+            <label style={{ display: 'block', marginBottom: 8 }}>API密钥:</label>
+            <Input.Password
+              placeholder="请输入API密钥"
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+            />
+          </div>
+          
+          <Button
+            onClick={handleFetchModels}
+            loading={isLoadingModels}
+            disabled={!apiUrl}
+          >
+            获取模型列表
+          </Button>
+          
+          {modelList.length > 0 && (
+            <div>
+              <label style={{ display: 'block', marginBottom: 8 }}>选择模型:</label>
+              <Select
+                placeholder="请选择文生图模型"
+                value={selectedModel}
+                onChange={(value) => setSelectedModel(value)}
+                style={{ width: '100%' }}
+                options={modelList.map(model => ({ label: model, value: model }))}
+              />
+            </div>
+          )}
+          
+          <Button
+            onClick={handleTestConnection}
+            loading={isTestingConnection}
+            disabled={!apiUrl || !selectedModel}
+          >
+            测试API连接
+          </Button>
+        </Space>
+      </Card>
+    </Space>
+  );
+
+  // 渲染生图区域
+  const renderGenerationSection = () => (
+    <Space direction="vertical" size="large" style={{ width: '100%' }}>
+      {/* 批量生图配置 */}
+      <Card title="批量生图配置">
+        <Space direction="vertical" style={{ width: '100%' }} size="middle">
+          <div>
+            <label style={{ display: 'block', marginBottom: 8 }}>并发数:</label>
+            <InputNumber
+              min={1}
+              max={10}
+              value={concurrency}
+              onChange={(value) => setConcurrency(value || 1)}
+              style={{ width: '100%' }}
+            />
+          </div>
+          
+          <div>
+            <label style={{ display: 'block', marginBottom: 8 }}>超时时间(秒):</label>
+            <InputNumber
+              min={30}
+              max={600}
+              value={timeoutSecs}
+              onChange={(value) => setTimeoutSecs(value || 180)}
+              style={{ width: '100%' }}
+            />
+          </div>
+          
+          <div>
+            <label style={{ display: 'block', marginBottom: 8 }}>最大重试次数:</label>
+            <InputNumber
+              min={0}
+              max={10}
+              value={maxRetries}
+              onChange={(value) => setMaxRetries(value || 3)}
+              style={{ width: '100%' }}
+            />
+          </div>
+          
+          {/* 自定义模型参数 */}
+          <div>
+            <label style={{ display: 'block', marginBottom: 8 }}>
+              自定义模型参数 (JSON格式):
+            </label>
+            <Input.TextArea
+              rows={6}
+              placeholder='例如: {"width": 512, "height": 512, "steps": 20}'
+              value={customParams}
+              onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setCustomParams(e.target.value)}
+              style={{ fontFamily: 'monospace' }}
+            />
+            {paramsError && (
+              <Text type="danger" style={{ fontSize: 12 }}>
+                {paramsError}
+              </Text>
+            )}
+          </div>
+          
+          <Button
+            type="primary"
+            danger
+            onClick={handleStartBatchGeneration}
+            loading={isGenerating}
+            disabled={!apiUrl || !selectedModel || projects.length === 0 || !!paramsError}
+          >
+            开始批量生图
+          </Button>
+        </Space>
+      </Card>
+      
+      {/* 任务进度 */}
+      {isGenerating && (
+        <Card title="任务进度">
+          <div style={{ marginBottom: 10 }}>
+            <span style={{ marginRight: 15 }}>成功: {taskProgress.successCount}</span>
+            <span style={{ marginRight: 15, color: taskProgress.failedCount > 0 ? 'red' : 'inherit' }}>
+              失败: {taskProgress.failedCount}
+            </span>
+            <span>跳过: {taskProgress.skippedCount}</span>
+          </div>
+        </Card>
+      )}
+    </Space>
+  );
+
+  // 渲染工具区域
+  const renderToolsSection = () => (
+    <Space direction="vertical" size="large" style={{ width: '100%' }}>
+      {/* 数据库探索工具 */}
+      <Card title="数据库探索">
+        <Space wrap>
+          <Button onClick={handleExploreDatabase}>
+            探索数据库结构
+          </Button>
+          <Button onClick={handleLoadProjects}>
+            加载项目列表
+          </Button>
+          <Button onClick={handleTestPrompt}>
+            测试提示词拼接
+          </Button>
+          <Button onClick={handleGetProjectDetail}>
+            获取项目详情
+          </Button>
+          <Button onClick={handleBackupProject}>
+            备份项目
+          </Button>
+          <Button onClick={handleLoadShots}>
+            加载分镜列表
+          </Button>
+        </Space>
+      </Card>
+      
+      {/* 数据库表结构 */}
+      {tables.length > 0 && (
+        <Card title="数据库表结构">
+          <Table 
+            columns={tableColumns} 
+            dataSource={tables}
+            rowKey="table_name"
+            expandable={{
+              expandedRowRender: (record) => (
+                <div>
+                  <Text strong>字段列表:</Text>
+                  <ul>
+                    {record.columns.map((col, idx) => (
+                      <li key={idx}>
+                        {col.name} ({col.column_type})
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ),
+            }}
+          />
+        </Card>
+      )}
+    </Space>
+  );
 
   const tableColumns = [
     {
@@ -303,243 +621,41 @@ function App() {
 
   return (
     <ConfigProvider locale={zhCN}>
-      <div style={{ padding: '40px' }}>
-        <Title level={2}>文镜生图插件</Title>
+      <Layout style={{ minHeight: '100vh' }}>
+        {/* 顶部标题栏 */}
+        <Layout.Header style={{ 
+          background: '#fff', 
+          padding: '0 24px',
+          borderBottom: '1px solid #f0f0f0'
+        }}>
+          <Title level={3} style={{ margin: 0, lineHeight: '64px' }}>
+            文镜生图插件
+          </Title>
+        </Layout.Header>
         
-        <Card title="配置信息" style={{ marginTop: 20 }}>
-          <Space direction="vertical" size="large">
-            <div>
-              <Text strong>文镜根目录: </Text>
-              <Text>{config?.wenjing_root || '未设置'}</Text>
-            </div>
-            
-            <div>
-              <Text strong>并发数: </Text>
-              <Text>{config?.concurrency}</Text>
-            </div>
-            
-            <div>
-              <Text strong>超时时间: </Text>
-              <Text>{config?.timeout_secs} 秒</Text>
-            </div>
-            
-            <Space wrap>
-              <Button type="primary" onClick={handleSelectWenjingRoot}>
-                选择文镜根目录
-              </Button>
-            </Space>
-          </Space>
-        </Card>
-
-        <Card title="API配置" style={{ marginTop: 20 }}>
-          <Space direction="vertical" style={{ width: '100%' }} size="large">
-            {/* API URL输入 */}
-            <div>
-              <label style={{ display: 'block', marginBottom: 8 }}>API Base URL:</label>
-              <Input
-                placeholder="例如: https://api.openai.com/v1"
-                value={apiUrl}
-                onChange={(e) => setApiUrl(e.target.value)}
-                style={{ width: '100%' }}
-              />
-            </div>
-
-            {/* API Key输入 */}
-            <div>
-              <label style={{ display: 'block', marginBottom: 8 }}>API Key:</label>
-              <Input.Password
-                placeholder="请输入API密钥"
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                style={{ width: '100%' }}
-              />
-            </div>
-
-            {/* 获取模型列表按钮 */}
-            <Button
-              type="primary"
-              onClick={handleFetchModels}
-              loading={isLoadingModels}
-              disabled={!apiUrl}
-            >
-              获取模型列表
-            </Button>
-
-            {/* 模型选择下拉框 */}
-            {modelList.length > 0 && (
-              <div>
-                <label style={{ display: 'block', marginBottom: 8 }}>选择模型:</label>
-                <Select
-                  placeholder="请选择文生图模型"
-                  value={selectedModel}
-                  onChange={(value) => setSelectedModel(value)}
-                  style={{ width: '100%' }}
-                  options={modelList.map(model => ({ label: model, value: model }))}
-                />
-              </div>
-            )}
-
-            {/* 测试API连接按钮 */}
-            <Button
-              onClick={handleTestConnection}
-              loading={isTestingConnection}
-              disabled={!apiUrl || !selectedModel}
-            >
-              测试API连接
-            </Button>
-          </Space>
-        </Card>
-
-        <Card title="批量生图" style={{ marginTop: 20 }}>
-          <Space direction="vertical" style={{ width: '100%' }} size="large">
-            {/* 项目选择提示 */}
-            <div style={{ color: '#666' }}>
-              当前将使用第一个项目进行测试: {projects.length > 0 ? projects[0].name : '未加载项目'}
-            </div>
-
-            {/* 并发数设置 */}
-            <div>
-              <label style={{ display: 'block', marginBottom: 8 }}>并发数:</label>
-              <InputNumber
-                min={1}
-                max={10}
-                value={concurrency}
-                onChange={(value) => setConcurrency(value || 1)}
-                style={{ width: '100%' }}
-              />
-            </div>
-
-            {/* 超时时间设置 */}
-            <div>
-              <label style={{ display: 'block', marginBottom: 8 }}>超时时间(秒):</label>
-              <InputNumber
-                min={30}
-                max={600}
-                value={timeoutSecs}
-                onChange={(value) => setTimeoutSecs(value || 180)}
-                style={{ width: '100%' }}
-              />
-            </div>
-
-            {/* 最大重试次数 */}
-            <div>
-              <label style={{ display: 'block', marginBottom: 8 }}>最大重试次数:</label>
-              <InputNumber
-                min={0}
-                max={10}
-                value={maxRetries}
-                onChange={(value) => setMaxRetries(value || 3)}
-                style={{ width: '100%' }}
-              />
-            </div>
-
-            {/* 开始批量生图按钮 */}
-            <Button
-              type="primary"
-              danger
-              onClick={handleStartBatchGeneration}
-              loading={isGenerating}
-              disabled={!apiUrl || !selectedModel || projects.length === 0}
-            >
-              开始批量生图
-            </Button>
-
-            {/* 进度显示区域(可选) */}
-            {isGenerating && (
-              <div style={{ padding: 10, background: '#f5f5f5', borderRadius: 4 }}>
-                <p>任务进行中...</p>
-                <p>请查看控制台日志获取详细信息</p>
-              </div>
-            )}
-          </Space>
-        </Card>
-
-        {config?.wenjing_root && (
-          <>
-            <Card title="数据库探索" style={{ marginTop: 20 }}>
-              <Space>
-                <Button onClick={handleExploreDatabase}>
-                  探索数据库结构
-                </Button>
-                <Button onClick={handleLoadProjects}>
-                  加载项目列表
-                </Button>
-                <Button onClick={handleTestPrompt}>
-                  测试提示词拼接
-                </Button>
-                <Button onClick={handleGetProjectDetail}>
-                  获取项目详情
-                </Button>
-                <Button onClick={handleBackupProject}>
-                  备份项目
-                </Button>
-                <Button onClick={handleLoadShots}>
-                  加载分镜列表
-                </Button>
-              </Space>
-            </Card>
-
-            {tables.length > 0 && (
-              <Card title="数据库表结构" style={{ marginTop: 20 }}>
-                <Table 
-                  columns={tableColumns} 
-                  dataSource={tables}
-                  rowKey="table_name"
-                  expandable={{
-                    expandedRowRender: (record) => (
-                      <div>
-                        <Text strong>字段列表:</Text>
-                        <ul>
-                          {record.columns.map((col, idx) => (
-                            <li key={idx}>
-                              {col.name} ({col.column_type})
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    ),
-                  }}
-                />
-              </Card>
-            )}
-
-            {projects.length > 0 && (
-              <Card title="项目列表" style={{ marginTop: 20 }}>
-                <Table
-                  dataSource={projects}
-                  rowKey="id"
-                  columns={[
-                    { title: 'ID', dataIndex: 'id', key: 'id' },
-                    { title: '名称', dataIndex: 'name', key: 'name' },
-                    { title: '创建时间', dataIndex: 'created_at', key: 'created_at' },
-                    { title: '分镜数', dataIndex: 'shot_count', key: 'shot_count' },
-                    { title: '图片数', dataIndex: 'image_count', key: 'image_count' },
-                  ]}
-                />
-              </Card>
-            )}
-
-            {shots.length > 0 && (
-              <Card title="分镜列表" style={{ marginTop: 20 }}>
-                <Table
-                  dataSource={shots}
-                  rowKey="id"
-                  columns={[
-                    { title: '分镜ID', dataIndex: 'id', key: 'id', width: 100 },
-                    { title: '排序号', dataIndex: 'order', key: 'order', width: 100 },
-                    { 
-                      title: '提示词', 
-                      dataIndex: 'prompt', 
-                      key: 'prompt',
-                      ellipsis: true,
-                    },
-                  ]}
-                />
-              </Card>
-            )}
-          </>
-        )}
-      </div>
+        <Layout>
+          {/* 侧边栏导航 */}
+          <Sider width={200} theme="light" style={{ borderRight: '1px solid #f0f0f0' }}>
+            <Menu
+              mode="inline"
+              selectedKeys={[selectedMenuKey]}
+              onClick={({ key }) => setSelectedMenuKey(key)}
+              items={[
+                { key: 'config', label: '基础配置', icon: <SettingOutlined /> },
+                { key: 'generation', label: '批量生图', icon: <PlayCircleOutlined /> },
+                { key: 'tools', label: '开发工具', icon: <ToolOutlined /> }
+              ]}
+            />
+          </Sider>
+          
+          {/* 主内容区 */}
+          <Content style={{ padding: 24, background: '#f5f5f5' }}>
+            {selectedMenuKey === 'config' && renderConfigSection()}
+            {selectedMenuKey === 'generation' && renderGenerationSection()}
+            {selectedMenuKey === 'tools' && renderToolsSection()}
+          </Content>
+        </Layout>
+      </Layout>
     </ConfigProvider>
   );
 }
