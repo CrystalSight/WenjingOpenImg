@@ -6,6 +6,7 @@ mod database;
 mod project;
 mod api_client;
 mod batch_generator;
+mod config_presets;
 
 use config::{AppConfig, load_config, save_config, validate_wenjing_root};
 use database::{explore_database, list_projects, list_shots, get_project_prompts, get_shot_full_prompt};
@@ -106,6 +107,75 @@ fn backup_project_cmd(wenjing_root: String, project_id: i64) -> Result<String, S
     
     // 执行备份
     project::backup_project(&workspace, &detail.project_folder, &detail.name)
+}
+
+/// 保存配置方案
+#[command]
+fn save_config_preset(preset: config_presets::ConfigPreset) -> Result<(), String> {
+    config_presets::save_preset(&preset)
+}
+
+/// 加载配置方案
+#[command]
+fn load_config_preset(name: String) -> Result<config_presets::ConfigPreset, String> {
+    config_presets::load_preset(&name)
+}
+
+/// 列出所有配置方案
+#[command]
+fn list_config_presets() -> Result<Vec<String>, String> {
+    config_presets::list_presets()
+}
+
+/// 项目预检结果
+#[derive(serde::Serialize)]
+struct ProjectInspection {
+    project_id: i64,
+    project_name: String,
+    total_shots: i64,
+    existing_images: i64,
+    missing_prompt_shots: Vec<MissingPromptShot>,
+}
+
+#[derive(serde::Serialize)]
+struct MissingPromptShot {
+    shot_id: i64,
+    order: i64,
+    prompt: String,
+}
+
+/// 项目预检 - 检查分镜提示词完整性和已有图片
+#[command]
+fn inspect_project(wenjing_root: String, project_id: i64) -> Result<ProjectInspection, String> {
+    let wenjing_root_buf = std::path::PathBuf::from(wenjing_root);
+    let db_path = wenjing_root_buf.join("aigc.sqlite");
+    
+    // 1. 获取项目详情
+    let detail = project::get_project_detail(&wenjing_root_buf, project_id)?;
+    
+    // 2. 获取所有分镜
+    let shots = database::list_shots(&db_path, project_id)?;
+    let total_shots = shots.len() as i64;
+    
+    // 3. 检查缺少提示词的分镜
+    let mut missing_prompt_shots = Vec::new();
+    for shot in &shots {
+        if shot.prompt.trim().is_empty() {
+            missing_prompt_shots.push(MissingPromptShot {
+                shot_id: shot.id,
+                order: shot.order,
+                prompt: shot.prompt.clone(),
+            });
+        }
+    }
+    
+    Ok(ProjectInspection {
+        project_id,
+        project_name: detail.name,
+        total_shots,
+        existing_images: detail.image_count,
+        missing_prompt_shots,
+    })
 }
 
 /// 获取可用模型列表
@@ -215,38 +285,59 @@ async fn start_batch_generation(
     });
     
     // 实时推送事件到前端
+    let mut total: usize = 0;
+    let mut completed: usize = 0;
+    
     while let Some(update) = receiver.recv().await {
         tracing::info!("任务更新: {:?}", update);
         
         // 将TaskUpdate转换为JSON并发送到前端
         let event_name = "task-update";
         let payload = match &update {
-            TaskUpdate::Started { shot_id, total } => {
+            TaskUpdate::Started { shot_id, total: t } => {
+                total = *t;
                 serde_json::json!({
                     "type": "Started",
                     "shot_id": shot_id,
-                    "total": total
+                    "total": t,
+                    "current": 0,
+                    "percent": 0.0
                 })
             }
             TaskUpdate::Success { shot_id, image_path } => {
+                completed += 1;
+                let percent = if total > 0 { (completed as f64 / total as f64) * 100.0 } else { 0.0 };
                 serde_json::json!({
                     "type": "Success",
                     "shot_id": shot_id,
-                    "image_path": image_path
+                    "image_path": image_path,
+                    "current": completed,
+                    "total": total,
+                    "percent": percent
                 })
             }
             TaskUpdate::Failed { shot_id, error } => {
+                completed += 1;
+                let percent = if total > 0 { (completed as f64 / total as f64) * 100.0 } else { 0.0 };
                 serde_json::json!({
                     "type": "Failed",
                     "shot_id": shot_id,
-                    "error": error
+                    "error": error,
+                    "current": completed,
+                    "total": total,
+                    "percent": percent
                 })
             }
             TaskUpdate::Skipped { shot_id, reason } => {
+                completed += 1;
+                let percent = if total > 0 { (completed as f64 / total as f64) * 100.0 } else { 0.0 };
                 serde_json::json!({
                     "type": "Skipped",
                     "shot_id": shot_id,
-                    "reason": reason
+                    "reason": reason,
+                    "current": completed,
+                    "total": total,
+                    "percent": percent
                 })
             }
             TaskUpdate::Completed { success_count, failed_count, skipped_count } => {
@@ -254,7 +345,10 @@ async fn start_batch_generation(
                     "type": "Completed",
                     "success_count": success_count,
                     "failed_count": failed_count,
-                    "skipped_count": skipped_count
+                    "skipped_count": skipped_count,
+                    "current": total,
+                    "total": total,
+                    "percent": 100.0
                 })
             }
         };
@@ -290,6 +384,10 @@ fn main() {
             get_project_detail_cmd,
             check_shot_exists_cmd,
             backup_project_cmd,
+            save_config_preset,
+            load_config_preset,
+            list_config_presets,
+            inspect_project,
             fetch_models,
             test_api_connection,
             start_batch_generation,

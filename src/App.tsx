@@ -1,24 +1,24 @@
-import { useState, useEffect } from 'react';
-import { Button, message, Space, Card, Typography, ConfigProvider, Table, Input, Select, InputNumber, Modal, Layout, Menu } from 'antd';
-import { SettingOutlined, PlayCircleOutlined, ToolOutlined } from '@ant-design/icons';
+import { useState, useEffect, useRef } from 'react';
+import { Button, message, Space, Card, Typography, ConfigProvider, Input, Select, Modal, Layout, Menu } from 'antd';
+import { SettingOutlined, PlayCircleOutlined } from '@ant-design/icons';
 import zhCN from 'antd/locale/zh_CN';
 import { open } from '@tauri-apps/api/dialog';
 import { listen } from '@tauri-apps/api/event';
 import { getConfig, selectWenjingRoot } from './api/config';
-import { exploreDatabase, getProjects, getShots, getShotFullPrompt } from './api/database';
-import { getProjectDetail, backupProject } from './api/project';
+import { getProjects, getShots, getShotFullPrompt } from './api/database';
+import { backupProject } from './api/project';
 import { fetchModels, testApiConnection, type TestConnectionResult } from './api/api_client';
 import { startBatchGeneration } from './api/batch';
-import type { AppConfig, TableInfo, ProjectInfo, ShotInfo } from './types';
+import { saveConfigPreset, loadConfigPreset, listConfigPresets } from './api/preset';
+import { inspectProject } from './api/inspection';
+import type { AppConfig, ProjectInfo } from './types';
 
 const { Title, Text } = Typography;
 const { Sider, Content } = Layout;
 
 function App() {
   const [config, setConfig] = useState<AppConfig | null>(null);
-  const [tables, setTables] = useState<TableInfo[]>([]);
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
-  const [shots, setShots] = useState<ShotInfo[]>([]);
 
   // API配置状态
   const [apiUrl, setApiUrl] = useState<string>('');
@@ -28,7 +28,7 @@ function App() {
   const [isLoadingModels, setIsLoadingModels] = useState<boolean>(false);
   const [isTestingConnection, setIsTestingConnection] = useState<boolean>(false);
 
-  // 批量生图配置状态
+  // 批量生图配置状态(通过配置方案管理)
   const [concurrency, setConcurrency] = useState<number>(1);
   const [timeoutSecs, setTimeoutSecs] = useState<number>(180);
   const [maxRetries, setMaxRetries] = useState<number>(3);
@@ -52,15 +52,48 @@ function App() {
   });
 
   // 侧边栏导航状态
-  const [selectedMenuKey, setSelectedMenuKey] = useState<string>('config');
+  const [selectedMenuKey, setSelectedMenuKey] = useState<string>('generation');
 
   // 自定义模型参数状态
   const [customParams, setCustomParams] = useState<string>('{}');
   const [paramsError, setParamsError] = useState<string>('');
 
+  // 选中的项目ID
+  const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null);
+
+  // 项目预检结果
+  interface InspectionResult {
+    project_id: number;
+    project_name: string;
+    total_shots: number;
+    existing_images: number;
+    missing_prompt_shots: Array<{
+      shot_id: number;
+      order: number;
+      prompt: string;
+    }>;
+  }
+  const [inspectionResult, setInspectionResult] = useState<InspectionResult | null>(null);
+
+  // 备份状态
+  const [isBackingUp, setIsBackingUp] = useState<boolean>(false);
+
+  // 配置方案列表
+  const [configPresets, setConfigPresets] = useState<string[]>([]);
+  const [selectedPreset, setSelectedPreset] = useState<string>('');
+
+  const hasLoadedProjects = useRef(false);
+
   useEffect(() => {
     loadConfig();
   }, []);
+
+  useEffect(() => {
+    if (config?.wenjing_root && !hasLoadedProjects.current) {
+      autoLoadProjects();
+      hasLoadedProjects.current = true;
+    }
+  }, [config]);
 
   // 验证自定义参数的JSON格式
   useEffect(() => {
@@ -81,8 +114,62 @@ function App() {
     try {
       const cfg = await getConfig();
       setConfig(cfg);
-    } catch (error) {
+    } catch {
       message.error('加载配置失败');
+    }
+  };
+
+  // 自动加载项目
+  const autoLoadProjects = async () => {
+    if (!config?.wenjing_root) return;
+    
+    try {
+      const loaded = await getProjects(config.wenjing_root);
+      setProjects(loaded);
+      if (loaded.length > 0) {
+        message.info(`已自动加载 ${loaded.length} 个项目`);
+      }
+    } catch (error) {
+      console.error('自动加载项目失败:', error);
+    }
+  };
+
+  // 处理项目选择
+  const handleProjectSelect = async (projectId: number) => {
+    setSelectedProjectId(projectId);
+    setInspectionResult(null);
+    
+    if (!config?.wenjing_root) return;
+    
+    try {
+      const result = await inspectProject(config.wenjing_root, projectId);
+      setInspectionResult(result);
+      
+      if (result.missing_prompt_shots.length > 0) {
+        Modal.warning({
+          title: '发现缺少提示词的分镜',
+          content: (
+            <div>
+              <p>以下 {result.missing_prompt_shots.length} 个分镜缺少提示词:</p>
+              <ul>
+                {result.missing_prompt_shots.map(shot => (
+                  <li key={shot.shot_id}>
+                    分镜 #{shot.order} (ID: {shot.shot_id})
+                  </li>
+                ))}
+              </ul>
+              <p>是否继续生图?(这些分镜将被跳过)</p>
+            </div>
+          ),
+          onOk: () => {
+            message.info('已确认,可以开始生图');
+          },
+        });
+      } else {
+        message.success('项目预检通过,可以开始生图');
+      }
+    } catch (error) {
+      message.error(`预检失败: ${error}`);
     }
   };
 
@@ -103,123 +190,8 @@ function App() {
           message.error('请选择包含 aigc.sqlite 和 zuopin 文件夹的文镜根目录');
         }
       }
-    } catch (error) {
+    } catch {
       message.error('选择目录失败');
-    }
-  };
-
-  const handleExploreDatabase = async () => {
-    if (!config?.wenjing_root) {
-      message.warning('请先选择文镜根目录');
-      return;
-    }
-
-    try {
-      const tables = await exploreDatabase(config.wenjing_root);
-      setTables(tables);
-      message.success(`发现 ${tables.length} 个表`);
-    } catch (error) {
-      message.error(`探索数据库失败: ${error}`);
-    }
-  };
-
-  const handleLoadProjects = async () => {
-    if (!config?.wenjing_root) {
-      message.warning('请先选择文镜根目录');
-      return;
-    }
-
-    try {
-      const projects = await getProjects(config.wenjing_root);
-      setProjects(projects);
-      message.success(`加载了 ${projects.length} 个项目`);
-    } catch (error) {
-      message.error(`加载项目列表失败: ${error}`);
-    }
-  };
-
-  const handleTestPrompt = async () => {
-    if (!config?.wenjing_root || projects.length === 0) {
-      message.warning('请先加载项目列表');
-      return;
-    }
-
-    try {
-      // 获取第一个项目的分镜
-      const shots = await getShots(config.wenjing_root, projects[0].id);
-      if (shots.length > 0) {
-        // 获取第一个分镜的完整提示词
-        const fullPrompt = await getShotFullPrompt(config.wenjing_root, shots[0].id);
-        message.info(`完整提示词:\n${fullPrompt}`);
-        console.log('完整提示词:', fullPrompt);
-      } else {
-        message.warning('该项目没有分镜');
-      }
-    } catch (error) {
-      message.error(`获取提示词失败: ${error}`);
-    }
-  };
-
-  const handleGetProjectDetail = async () => {
-    if (!config?.wenjing_root || projects.length === 0) {
-      message.warning('请先加载项目列表');
-      return;
-    }
-
-    try {
-      const firstProject = projects[0];
-      const detail = await getProjectDetail(
-        config.wenjing_root,
-        firstProject.id
-      );
-      
-      // 显示更详细的信息
-      const info = `项目详情:
-名称: ${detail.name}
-分镜数: ${detail.shot_count}
-已有图片: ${detail.image_count}
-项目文件夹: ${detail.project_folder}`;
-      
-      message.info(info);
-      console.log('项目详情:', detail);
-    } catch (error) {
-      message.error(`获取项目详情失败: ${error}`);
-    }
-  };
-
-  const handleBackupProject = async () => {
-    if (!config?.wenjing_root || projects.length === 0) {
-      message.warning('请先加载项目列表');
-      return;
-    }
-
-    try {
-      const firstProject = projects[0];
-      const backupPath = await backupProject(
-        config.wenjing_root,
-        firstProject.id
-      );
-      
-      message.success(`备份成功: ${backupPath}`);
-    } catch (error) {
-      message.error(`备份失败: ${error}`);
-    }
-  };
-
-  // 加载分镜列表
-  const handleLoadShots = async () => {
-    if (!config?.wenjing_root || projects.length === 0) {
-      message.warning('请先加载项目列表');
-      return;
-    }
-
-    try {
-      const firstProject = projects[0];
-      const shotList = await getShots(config.wenjing_root, firstProject.id);
-      setShots(shotList);
-      message.success(`加载了 ${shotList.length} 个分镜`);
-    } catch (error) {
-      message.error(`加载分镜列表失败: ${error}`);
     }
   };
 
@@ -235,7 +207,6 @@ function App() {
       setModelList(fetchedModels);
       message.success(`成功获取 ${fetchedModels.length} 个模型`);
       
-      // 自动选择第一个包含"image"的模型
       const imageModel = fetchedModels.find(m => m.toLowerCase().includes('image'));
       if (imageModel) {
         setSelectedModel(imageModel);
@@ -277,31 +248,120 @@ function App() {
     }
   };
 
-  const handleStartBatchGeneration = async () => {
-    if (!config?.wenjing_root || projects.length === 0) {
-      message.warning('请先加载项目列表');
+  // API请求预览
+  const handlePreviewApiRequest = async () => {
+    if (!selectedProjectId || !config?.wenjing_root) {
+      message.warning('请先在批量生图页选择一个项目');
       return;
     }
-
+    
     if (!apiUrl || !selectedModel) {
       message.warning('请先配置API URL和选择模型');
       return;
     }
-
-    const firstProject = projects[0];
     
-    // 确认操作
-    const confirmed = await new Promise<boolean>((resolve) => {
-      Modal.confirm({
-        title: '确认开始批量生图?',
-        content: `项目: ${firstProject.name}\n分镜数: ${firstProject.shot_count}\n并发数: ${concurrency}\n超时: ${timeoutSecs}秒\n最大重试: ${maxRetries}次`,
-        onOk: () => resolve(true),
-        onCancel: () => resolve(false),
+    try {
+      // 获取项目的所有分镜
+      const shots = await getShots(config.wenjing_root, selectedProjectId);
+      
+      if (shots.length === 0) {
+        message.warning('该项目没有分镜');
+        return;
+      }
+      
+      // 随机选择一个分镜
+      const randomIndex = Math.floor(Math.random() * shots.length);
+      const randomShot = shots[randomIndex];
+      
+      // 获取完整提示词
+      const fullPrompt = await getShotFullPrompt(config.wenjing_root, randomShot.id);
+      
+      // 解析自定义参数
+      let extraParams = {};
+      try {
+        if (customParams.trim()) {
+          extraParams = JSON.parse(customParams);
+        }
+      } catch {
+        // 如果解析失败,使用空对象
+      }
+      
+      // 构建完整的API请求Payload
+      const payload = {
+        model: selectedModel,
+        prompt: fullPrompt,
+        n: 1,
+        size: "1024x1024",
+        ...extraParams
+      };
+      
+      // 显示弹窗
+      Modal.info({
+        title: 'API请求预览',
+        width: 600,
+        content: (
+          <div>
+            <Text strong>选中的分镜:</Text> 第{randomShot.order}个 (ID: {randomShot.id})<br/><br/>
+            <Text strong>完整提示词:</Text><br/>
+            <pre style={{ 
+              background: '#f5f5f5', 
+              padding: 12, 
+              borderRadius: 4,
+              maxHeight: 200,
+              overflow: 'auto',
+              fontSize: 12
+            }}>
+              {fullPrompt}
+            </pre><br/>
+            <Text strong>请求Payload:</Text><br/>
+            <pre style={{ 
+              background: '#f5f5f5', 
+              padding: 12, 
+              borderRadius: 4,
+              maxHeight: 300,
+              overflow: 'auto',
+              fontSize: 12
+            }}>
+              {JSON.stringify(payload, null, 2)}
+            </pre>
+          </div>
+        ),
+        okText: '关闭',
       });
-    });
+      
+    } catch (error) {
+      message.error(`生成预览失败: ${error}`);
+      console.error('API预览错误:', error);
+    }
+  };
 
-    if (!confirmed) return;
-
+  const handleBackupAndStartGeneration = async () => {
+    if (!selectedProjectId || !config?.wenjing_root) {
+      message.warning('请先选择项目');
+      return;
+    }
+    
+    if (!apiUrl || !selectedModel) {
+      message.warning('请先配置API URL和选择模型');
+      return;
+    }
+    
+    if (!!paramsError) {
+      message.warning('请修正自定义参数格式错误');
+      return;
+    }
+    
+    setIsBackingUp(true);
+    try {
+      const backupPath = await backupProject(config.wenjing_root, selectedProjectId);
+      message.success(`项目备份成功: ${backupPath}`);
+    } catch (error) {
+      message.error(`备份失败: ${error}`);
+      setIsBackingUp(false);
+      return;
+    }
+    setIsBackingUp(false);
+    
     setIsGenerating(true);
     setTaskProgress({
       successCount: 0,
@@ -313,46 +373,25 @@ function App() {
     let unlisten: (() => void) | undefined;
 
     try {
-      // ✅ 第一步: 先注册事件监听器
-      unlisten = await listen('task-update', (event: any) => {
+      unlisten = await listen('task-update', (event: { payload: { type: string; total?: number; failed_count?: number; success_count?: number; skipped_count?: number } }) => {
         const update = event.payload;
         
         switch (update.type) {
           case 'Started':
-            setTaskProgress(prev => ({
-              ...prev,
-              totalShots: update.total
-            }));
+            setTaskProgress(prev => ({ ...prev, totalShots: update.total }));
             break;
-            
           case 'Success':
-            setTaskProgress(prev => ({
-              ...prev,
-              successCount: prev.successCount + 1
-            }));
+            setTaskProgress(prev => ({ ...prev, successCount: prev.successCount + 1 }));
             break;
-            
           case 'Failed':
-            setTaskProgress(prev => ({
-              ...prev,
-              failedCount: prev.failedCount + 1
-            }));
+            setTaskProgress(prev => ({ ...prev, failedCount: prev.failedCount + 1 }));
             break;
-            
           case 'Skipped':
-            setTaskProgress(prev => ({
-              ...prev,
-              skippedCount: prev.skippedCount + 1
-            }));
+            setTaskProgress(prev => ({ ...prev, skippedCount: prev.skippedCount + 1 }));
             break;
-            
           case 'Completed':
-            setTaskProgress(prev => ({
-              ...prev,
-              status: 'completed'
-            }));
+            setTaskProgress(prev => ({ ...prev, status: 'completed' }));
             
-            // 显示最终结果,延长显示时间到5秒
             if (update.failed_count === 0) {
               message.success({
                 content: `批量生图完成! 成功:${update.success_count}, 跳过:${update.skipped_count}`,
@@ -366,43 +405,89 @@ function App() {
             }
             
             setIsGenerating(false);
-            unlisten?.();  // 取消监听
+            unlisten?.();
             break;
         }
       });
       
-      // ✅ 第二步: 再启动批量生图任务
       const taskId = await startBatchGeneration(
         config.wenjing_root,
-        firstProject.id,
+        selectedProjectId,
         apiUrl,
         apiKey || undefined,
         selectedModel,
-        customParams || '{}',  // 使用用户输入的自定义参数
+        customParams || '{}',
         concurrency,
         timeoutSecs,
         maxRetries
       );
 
       message.success(`批量生图任务已启动,任务ID: ${taskId}`);
-      console.log('批量生图任务已启动:', taskId);
       
     } catch (error) {
       message.error(`启动批量生图失败: ${error}`);
-      console.error('批量生图错误:', error);
       setIsGenerating(false);
       setTaskProgress(prev => ({ ...prev, status: 'idle' }));
-      // 如果启动失败,也要取消监听
       if (unlisten) {
         unlisten();
       }
     }
   };
 
+  // 加载配置方案列表
+  const loadConfigPresets = async () => {
+    try {
+      const presets = await listConfigPresets();
+      setConfigPresets(presets);
+    } catch (error) {
+      message.error(`加载配置方案列表失败: ${error}`);
+    }
+  };
+
+  // 保存配置方案
+  const handleSavePreset = async () => {
+    if (!selectedPreset) {
+      message.warning('请输入方案名称');
+      return;
+    }
+    
+    try {
+      await saveConfigPreset({
+        name: selectedPreset,
+        concurrency,
+        timeout_secs: timeoutSecs,
+        max_retries: maxRetries,
+        common_params: customParams,
+      });
+      message.success(`配置方案 '${selectedPreset}' 保存成功`);
+      loadConfigPresets();
+    } catch (error) {
+      message.error(`保存配置方案失败: ${error}`);
+    }
+  };
+
+  // 加载配置方案
+  const handleLoadPreset = async () => {
+    if (!selectedPreset) {
+      message.warning('请选择配置方案');
+      return;
+    }
+    
+    try {
+      const preset = await loadConfigPreset(selectedPreset);
+      setConcurrency(preset.concurrency);
+      setTimeoutSecs(preset.timeout_secs);
+      setMaxRetries(preset.max_retries);
+      setCustomParams(preset.common_params);
+      message.success(`已加载配置方案 '${selectedPreset}'`);
+    } catch (error) {
+      message.error(`加载配置方案失败: ${error}`);
+    }
+  };
+
   // 渲染配置区域
   const renderConfigSection = () => (
     <Space direction="vertical" size="large" style={{ width: '100%' }}>
-      {/* 文镜根目录配置 */}
       <Card title="文镜根目录">
         <Space>
           <Text>{config?.wenjing_root || '未设置'}</Text>
@@ -412,7 +497,6 @@ function App() {
         </Space>
       </Card>
       
-      {/* API配置 */}
       <Card title="API配置">
         <Space direction="vertical" style={{ width: '100%' }} size="middle">
           <div>
@@ -463,82 +547,127 @@ function App() {
           </Button>
         </Space>
       </Card>
+
+      {/* 自定义模型参数 */}
+      <Card title="自定义模型参数">
+        <Space direction="vertical" style={{ width: '100%' }}>
+          <div>
+            <label style={{ display: 'block', marginBottom: 8 }}>
+              JSON格式参数(可选):
+            </label>
+            <Input.TextArea
+              rows={6}
+              placeholder='例如: {"width": 512, "height": 512, "steps": 20}'
+              value={customParams}
+              onChange={(e) => setCustomParams(e.target.value)}
+              style={{ fontFamily: 'monospace' }}
+            />
+            {paramsError && (
+              <Text type="danger" style={{ fontSize: 12, marginTop: 4 }}>
+                {paramsError}
+              </Text>
+            )}
+          </div>
+        </Space>
+      </Card>
+
+      <Card title="配置方案管理">
+        <Space direction="vertical" style={{ width: '100%' }} size="middle">
+          <div>
+            <label style={{ display: 'block', marginBottom: 8 }}>选择配置方案:</label>
+            <Select
+              placeholder="选择或输入新方案名称"
+              value={selectedPreset}
+              onChange={(value) => setSelectedPreset(value)}
+              style={{ width: '100%' }}
+              options={configPresets.map(name => ({ label: name, value: name }))}
+              showSearch
+            />
+          </div>
+          
+          <Space>
+            <Button onClick={handleSavePreset} disabled={!selectedPreset}>
+              保存当前配置为方案
+            </Button>
+            <Button onClick={handleLoadPreset} disabled={!selectedPreset}>
+              加载选中方案
+            </Button>
+            <Button onClick={loadConfigPresets}>
+              刷新方案列表
+            </Button>
+          </Space>
+        </Space>
+      </Card>
+
+      {/* API请求预览 */}
+      <Card title="调试工具">
+        <Button onClick={handlePreviewApiRequest} block>
+          API请求预览
+        </Button>
+        <Text type="secondary" style={{ fontSize: 12, marginTop: 8, display: 'block' }}>
+          随机选取一个分镜,生成完整的API请求Payload供检查
+        </Text>
+      </Card>
     </Space>
   );
 
   // 渲染生图区域
   const renderGenerationSection = () => (
     <Space direction="vertical" size="large" style={{ width: '100%' }}>
-      {/* 批量生图配置 */}
-      <Card title="批量生图配置">
-        <Space direction="vertical" style={{ width: '100%' }} size="middle">
-          <div>
-            <label style={{ display: 'block', marginBottom: 8 }}>并发数:</label>
-            <InputNumber
-              min={1}
-              max={10}
-              value={concurrency}
-              onChange={(value) => setConcurrency(value || 1)}
-              style={{ width: '100%' }}
-            />
-          </div>
-          
-          <div>
-            <label style={{ display: 'block', marginBottom: 8 }}>超时时间(秒):</label>
-            <InputNumber
-              min={30}
-              max={600}
-              value={timeoutSecs}
-              onChange={(value) => setTimeoutSecs(value || 180)}
-              style={{ width: '100%' }}
-            />
-          </div>
-          
-          <div>
-            <label style={{ display: 'block', marginBottom: 8 }}>最大重试次数:</label>
-            <InputNumber
-              min={0}
-              max={10}
-              value={maxRetries}
-              onChange={(value) => setMaxRetries(value || 3)}
-              style={{ width: '100%' }}
-            />
-          </div>
-          
-          {/* 自定义模型参数 */}
-          <div>
-            <label style={{ display: 'block', marginBottom: 8 }}>
-              自定义模型参数 (JSON格式):
-            </label>
-            <Input.TextArea
-              rows={6}
-              placeholder='例如: {"width": 512, "height": 512, "steps": 20}'
-              value={customParams}
-              onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setCustomParams(e.target.value)}
-              style={{ fontFamily: 'monospace' }}
-            />
-            {paramsError && (
-              <Text type="danger" style={{ fontSize: 12 }}>
-                {paramsError}
-              </Text>
-            )}
-          </div>
-          
-          <Button
-            type="primary"
-            danger
-            onClick={handleStartBatchGeneration}
-            loading={isGenerating}
-            disabled={!apiUrl || !selectedModel || projects.length === 0 || !!paramsError}
-          >
-            开始批量生图
+      <Card title="选择项目">
+        <Select
+          placeholder="请选择要生图的项目"
+          value={selectedProjectId}
+          onChange={handleProjectSelect}
+          style={{ width: '100%' }}
+          options={projects.map(p => ({ label: p.name, value: p.id }))}
+          disabled={projects.length === 0}
+        />
+        {projects.length === 0 && config?.wenjing_root && (
+          <Button onClick={autoLoadProjects} style={{ marginTop: 8 }}>
+            重新加载项目
           </Button>
-        </Space>
+        )}
       </Card>
       
-      {/* 任务进度 */}
+      {inspectionResult && (
+        <Card title="项目预检结果" type="inner">
+          <div style={{ marginBottom: 10 }}>
+            <Text strong>项目名称:</Text> {inspectionResult.project_name}<br/>
+            <Text strong>分镜总数:</Text> {inspectionResult.total_shots}<br/>
+            <Text strong>已有图片:</Text> {inspectionResult.existing_images}<br/>
+            <Text strong>缺失提示词:</Text> {inspectionResult.missing_prompt_shots.length} 个
+          </div>
+          
+          {inspectionResult.missing_prompt_shots.length > 0 && (
+            <div>
+              <Text type="warning">以下分镜缺少提示词:</Text>
+              <ul>
+                {inspectionResult.missing_prompt_shots.map(shot => (
+                  <li key={shot.shot_id}>
+                    分镜 #{shot.order} (ID: {shot.shot_id})
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </Card>
+      )}
+      
+      <Button
+        type="primary"
+        danger
+        size="large"
+        block
+        onClick={handleBackupAndStartGeneration}
+        loading={isGenerating || isBackingUp}
+        disabled={!selectedProjectId || !apiUrl || !selectedModel || !!paramsError || inspectionResult === null}
+      >
+        {isBackingUp ? '正在备份...' : '开始批量生图'}
+      </Button>
+      
       {isGenerating && (
-        <Card title="任务进度">
+        <Card title="生图进度">
           <div style={{ marginBottom: 10 }}>
             <span style={{ marginRight: 15 }}>成功: {taskProgress.successCount}</span>
             <span style={{ marginRight: 15, color: taskProgress.failedCount > 0 ? 'red' : 'inherit' }}>
@@ -551,82 +680,16 @@ function App() {
     </Space>
   );
 
-  // 渲染工具区域
-  const renderToolsSection = () => (
-    <Space direction="vertical" size="large" style={{ width: '100%' }}>
-      {/* 数据库探索工具 */}
-      <Card title="数据库探索">
-        <Space wrap>
-          <Button onClick={handleExploreDatabase}>
-            探索数据库结构
-          </Button>
-          <Button onClick={handleLoadProjects}>
-            加载项目列表
-          </Button>
-          <Button onClick={handleTestPrompt}>
-            测试提示词拼接
-          </Button>
-          <Button onClick={handleGetProjectDetail}>
-            获取项目详情
-          </Button>
-          <Button onClick={handleBackupProject}>
-            备份项目
-          </Button>
-          <Button onClick={handleLoadShots}>
-            加载分镜列表
-          </Button>
-        </Space>
-      </Card>
-      
-      {/* 数据库表结构 */}
-      {tables.length > 0 && (
-        <Card title="数据库表结构">
-          <Table 
-            columns={tableColumns} 
-            dataSource={tables}
-            rowKey="table_name"
-            expandable={{
-              expandedRowRender: (record) => (
-                <div>
-                  <Text strong>字段列表:</Text>
-                  <ul>
-                    {record.columns.map((col, idx) => (
-                      <li key={idx}>
-                        {col.name} ({col.column_type})
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              ),
-            }}
-          />
-        </Card>
-      )}
-    </Space>
-  );
-
-  const tableColumns = [
-    {
-      title: '表名',
-      dataIndex: 'table_name',
-      key: 'table_name',
-    },
-    {
-      title: '字段数量',
-      dataIndex: 'columns',
-      key: 'column_count',
-      render: (columns: any[]) => columns.length,
-    },
-  ];
-
   return (
     <ConfigProvider locale={zhCN}>
       <Layout style={{ minHeight: '100vh' }}>
-        {/* 顶部标题栏 */}
         <Layout.Header style={{ 
           background: '#fff', 
           padding: '0 24px',
-          borderBottom: '1px solid #f0f0f0'
+          borderBottom: '1px solid #f0f0f0',
+          position: 'sticky',
+          top: 0,
+          zIndex: 10
         }}>
           <Title level={3} style={{ margin: 0, lineHeight: '64px' }}>
             文镜生图插件
@@ -634,26 +697,34 @@ function App() {
         </Layout.Header>
         
         <Layout>
-          {/* 侧边栏导航 */}
-          <Sider width={200} theme="light" style={{ borderRight: '1px solid #f0f0f0' }}>
+          <Sider 
+            width={200} 
+            theme="light" 
+            style={{ 
+              borderRight: '1px solid #f0f0f0',
+              height: 'calc(100vh - 64px)',
+              overflow: 'auto',
+              position: 'sticky',
+              top: 64
+            }}
+          >
             <Menu
               mode="inline"
               selectedKeys={[selectedMenuKey]}
               onClick={({ key }) => setSelectedMenuKey(key)}
               items={[
-                { key: 'config', label: '基础配置', icon: <SettingOutlined /> },
                 { key: 'generation', label: '批量生图', icon: <PlayCircleOutlined /> },
-                { key: 'tools', label: '开发工具', icon: <ToolOutlined /> }
+                { key: 'config', label: '基础配置', icon: <SettingOutlined /> }
               ]}
             />
           </Sider>
           
-          {/* 主内容区 */}
-          <Content style={{ padding: 24, background: '#f5f5f5' }}>
-            {selectedMenuKey === 'config' && renderConfigSection()}
-            {selectedMenuKey === 'generation' && renderGenerationSection()}
-            {selectedMenuKey === 'tools' && renderToolsSection()}
-          </Content>
+          <Layout style={{ overflow: 'auto' }}>
+            <Content style={{ padding: 24, background: '#f5f5f5' }}>
+              {selectedMenuKey === 'config' && renderConfigSection()}
+              {selectedMenuKey === 'generation' && renderGenerationSection()}
+            </Content>
+          </Layout>
         </Layout>
       </Layout>
     </ConfigProvider>
