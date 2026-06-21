@@ -15,6 +15,19 @@ pub struct ConfigPreset {
     pub common_params: String,
 }
 
+/// 校验配置方案名称，防止路径穿越
+fn validate_preset_name(name: &str) -> Result<(), String> {
+    if name.is_empty() || name.len() > 64 {
+        return Err("方案名称长度需在1-64之间".to_string());
+    }
+    if name.contains('/') || name.contains('\\') || name.contains("..")
+        || name.contains('\0') || name.chars().any(|c| c.is_control())
+    {
+        return Err("方案名称包含非法字符".to_string());
+    }
+    Ok(())
+}
+
 /// 获取配置方案存储目录
 fn get_presets_dir() -> Result<PathBuf, String> {
     let home = dirs::home_dir()
@@ -27,6 +40,7 @@ fn get_presets_dir() -> Result<PathBuf, String> {
 
 /// 保存配置方案
 pub fn save_preset(preset: &ConfigPreset) -> Result<(), String> {
+    validate_preset_name(&preset.name)?;
     let presets_dir = get_presets_dir()?;
     let file_name = format!("config_{}.json", preset.name.replace(" ", "_"));
     let file_path = presets_dir.join(&file_name);
@@ -42,6 +56,7 @@ pub fn save_preset(preset: &ConfigPreset) -> Result<(), String> {
 
 /// 加载配置方案
 pub fn load_preset(name: &str) -> Result<ConfigPreset, String> {
+    validate_preset_name(name)?;
     let presets_dir = get_presets_dir()?;
     let file_name = format!("config_{}.json", name.replace(" ", "_"));
     let file_path = presets_dir.join(&file_name);
@@ -80,6 +95,7 @@ pub fn list_presets() -> Result<Vec<String>, String> {
 
 /// 删除配置方案
 pub fn delete_preset(name: &str) -> Result<(), String> {
+    validate_preset_name(name)?;
     let presets_dir = get_presets_dir()?;
     let file_name = format!("config_{}.json", name.replace(" ", "_"));
     let file_path = presets_dir.join(&file_name);

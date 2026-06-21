@@ -125,6 +125,11 @@ pub fn explore_database(db_path: &PathBuf) -> Result<Vec<TableInfo>, String> {
             continue;
         }
         
+        // 校验表名仅含字母数字和下划线，防止SQL注入
+        if !table_name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+            continue;
+        }
+        
         // 获取表的列信息
         let columns = get_table_columns(&conn, &table_name)?;
         tables.push(TableInfo {
@@ -138,7 +143,7 @@ pub fn explore_database(db_path: &PathBuf) -> Result<Vec<TableInfo>, String> {
 
 /// 获取指定表的列信息
 fn get_table_columns(conn: &Connection, table_name: &str) -> Result<Vec<ColumnInfo>, String> {
-    let query = format!("PRAGMA table_info({})", table_name);
+    let query = format!("PRAGMA table_info(\"{}\")", table_name.replace('"', "\"\""));
     let mut stmt = conn.prepare(&query)
         .map_err(|e| format!("查询表结构失败: {}", e))?;
     

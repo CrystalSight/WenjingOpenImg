@@ -6,7 +6,7 @@
     "distDir": "../dist"
   },
   "package": {
-    "productName": "WenjingImagePlugin",
+    "productName": "WenjingOpenImg",
     "version": "0.1.0"
   },
   "tauri": {
@@ -23,16 +23,16 @@
     "bundle": {
       "active": true,
       "targets": "all",
-      "identifier": "com.wenjing.image-plugin"
+      "identifier": "com.wenjing.image-OpenImg"
     },
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https:;"
     },
     "windows": [
       {
         "fullscreen": false,
         "resizable": true,
-        "title": "文镜生图插件",
+        "title": "WenjingOpenImg",
         "width": 1200,
         "height": 800
       }

@@ -656,6 +656,9 @@ function App() {
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
             />
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              API 密钥将以明文保存在本地配置文件中，请勿分享或上传配置文件。
+            </Text>
           </div>
           
           <Button

@@ -1,7 +1,10 @@
 [package]
-name = "wenjing-image-plugin"
+name = "wenjing-image-OpenImg"
 version = "0.1.0"
 edition = "2021"
+description = "文镜外部生图插件 - 基于OpenAI兼容API的批量图片生成工具"
+license = "MIT"
+repository = "https://github.com/CrystalSight/WenjingOpenImg"
 
 # 参见 https://doc.rust-lang.org/cargo/reference/manifest.html 了解更多信息
 

@@ -30,12 +30,12 @@ impl BatchGenerator {
         timeout_secs: u64,
         max_concurrent: usize,
         max_retries: u32,
-    ) -> Self {
-        Self {
-            api_client: Arc::new(ApiClient::new(api_url, api_key, timeout_secs)),
+    ) -> Result<Self, String> {
+        Ok(Self {
+            api_client: Arc::new(ApiClient::new(api_url, api_key, timeout_secs)?),
             concurrent_controller: Arc::new(ConcurrentController::new(max_concurrent)),
             max_retries,
-        }
+        })
     }
     
     /// 执行批量生图
@@ -200,6 +200,10 @@ impl BatchGenerator {
 /// 更新分镜的Path字段
 fn update_shot_path(db_path: &PathBuf, shot_id: i64, image_path: &str) -> Result<(), String> {
     let conn = database::open_database(db_path)?;
+    
+    // 启用WAL模式和busy_timeout以减少并发写入时的锁冲突
+    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")
+        .map_err(|e| format!("设置数据库参数失败: {}", e))?;
     
     conn.execute(
         "UPDATE Articles SET Path = ? WHERE ID = ?",

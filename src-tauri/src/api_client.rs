@@ -55,18 +55,18 @@ pub struct ApiClient {
 
 impl ApiClient {
     /// 创建新的API客户端
-    pub fn new(api_url: String, api_key: Option<String>, timeout_secs: u64) -> Self {
+    pub fn new(api_url: String, api_key: Option<String>, timeout_secs: u64) -> Result<Self, String> {
         let client = Client::builder()
             .timeout(Duration::from_secs(timeout_secs))
             .build()
-            .expect("创建HTTP客户端失败");
+            .map_err(|e| format!("创建HTTP客户端失败: {}", e))?;
         
-        Self {
+        Ok(Self {
             client,
             api_url,
             api_key,
             timeout_secs,
-        }
+        })
     }
     
     /// 获取可用模型列表

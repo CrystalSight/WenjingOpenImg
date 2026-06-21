@@ -187,7 +187,7 @@ fn inspect_project(wenjing_root: String, project_id: i64) -> Result<ProjectInspe
 /// 获取可用模型列表
 #[command]
 async fn fetch_models(api_url: String, api_key: Option<String>) -> Result<Vec<String>, String> {
-    let client = ApiClient::new(api_url, api_key, 30);
+    let client = ApiClient::new(api_url, api_key, 30)?;
     client.get_models().await
 }
 
@@ -207,7 +207,7 @@ async fn test_api_connection(
     model: String,
     test_prompt: Option<String>,
 ) -> Result<TestConnectionResult, String> {
-    let client = ApiClient::new(api_url, api_key, 180);
+    let client = ApiClient::new(api_url, api_key, 180)?;
     
     // 如果前端未提供提示词,使用默认提示词
     let prompt = test_prompt.unwrap_or_else(|| "A beautiful sunset over the ocean".to_string());
@@ -274,7 +274,7 @@ async fn start_batch_generation(
         timeout_secs,
         concurrency as usize,
         max_retries,
-    );
+    )?;
     
     // 创建事件通道
     let (sender, mut receiver) = mpsc::channel::<TaskUpdate>(100);
