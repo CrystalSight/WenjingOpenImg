@@ -696,6 +696,17 @@ function App() {
             />
           </div>
 
+          <div>
+            <label style={{ display: 'block', marginBottom: 8 }}>并发数:</label>
+            <InputNumber
+              min={1}
+              max={10}
+              value={concurrency}
+              onChange={(value) => setConcurrency(value || 1)}
+              style={{ width: '100%' }}
+            />
+          </div>
+
           <Button
             onClick={handleTestConnection}
             loading={isTestingConnection}
