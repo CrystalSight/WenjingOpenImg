@@ -2,6 +2,9 @@ import { invoke } from '@tauri-apps/api/tauri';
 
 export interface ConfigPreset {
   name: string;
+  api_url?: string;
+  api_key?: string;
+  model?: string;
   concurrency: number;
   timeout_secs: number;
   max_retries: number;

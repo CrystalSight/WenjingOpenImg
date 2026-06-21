@@ -10,6 +10,9 @@ pub struct AppConfig {
     /// OpenAI兼容API服务商URL
     pub api_url: Option<String>,
     
+    /// API密钥
+    pub api_key: Option<String>,
+    
     /// 选择的模型名称
     pub model: Option<String>,
     
@@ -31,6 +34,7 @@ impl Default for AppConfig {
         Self {
             wenjing_root: None,
             api_url: None,
+            api_key: None,
             model: None,
             common_params: Some("{}".to_string()),
             concurrency: 3,

@@ -6,6 +6,9 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigPreset {
     pub name: String,
+    pub api_url: Option<String>,
+    pub api_key: Option<String>,
+    pub model: Option<String>,
     pub concurrency: u32,
     pub timeout_secs: u64,
     pub max_retries: u32,
