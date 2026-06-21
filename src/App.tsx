@@ -121,6 +121,9 @@ function App() {
       if (cfg.api_url) {
         setApiUrl(cfg.api_url);
       }
+      if (cfg.api_key) {
+        setApiKey(cfg.api_key);
+      }
       if (cfg.model) {
         setSelectedModel(cfg.model);
       }
@@ -130,6 +133,9 @@ function App() {
       setConcurrency(cfg.concurrency);
       setTimeoutSecs(cfg.timeout_secs);
       setMaxRetries(cfg.max_retries);
+
+      // 加载配置方案列表
+      loadConfigPresets();
 
       // 标记初始加载完成
       setTimeout(() => {
@@ -155,6 +161,7 @@ function App() {
         const updatedConfig: AppConfig = {
           ...config,
           api_url: apiUrl || undefined,
+          api_key: apiKey || undefined,
           model: selectedModel || undefined,
           common_params: customParams || '{}',
           concurrency,
@@ -565,8 +572,8 @@ function App() {
             <label style={{ display: 'block', marginBottom: 8 }}>或从已有方案选择:</label>
             <Select
               placeholder="选择已有方案"
-              value={selectedPreset}
-              onChange={(value) => setSelectedPreset(value)}
+              value={selectedPreset || undefined}
+              onChange={(value: string) => setSelectedPreset(value ?? '')}
               style={{ width: '100%' }}
               options={configPresets.map(name => ({ label: name, value: name }))}
             />
