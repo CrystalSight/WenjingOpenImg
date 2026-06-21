@@ -22,7 +22,7 @@ pub struct AppConfig {
     /// 并发数量(默认3)
     pub concurrency: u32,
     
-    /// 超时时间(秒,默认60)
+    /// 超时时间(秒,默认180)
     pub timeout_secs: u64,
     
     /// 最大重试次数(默认3)

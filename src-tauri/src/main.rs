@@ -215,8 +215,8 @@ async fn test_api_connection(
     let request = ImageGenerationRequest {
         model,
         prompt,
-        n: 1,
-        size: Some("1024x1024".to_string()),
+        n: Some(1),  // 测试时生成1张图片
+        size: Some("1024x1024".to_string()),  // 测试时使用标准尺寸
         extra_params: serde_json::json!({}),
     };
     

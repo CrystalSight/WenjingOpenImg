@@ -702,7 +702,13 @@ function App() {
               min={1}
               max={10}
               value={concurrency}
-              onChange={(value) => setConcurrency(value || 1)}
+              onChange={(value) => {
+                if (value === null || value === undefined) {
+                  setConcurrency(1);
+                } else {
+                  setConcurrency(value);
+                }
+              }}
               style={{ width: '100%' }}
             />
           </div>

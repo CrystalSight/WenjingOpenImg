@@ -115,8 +115,8 @@ impl BatchGenerator {
                 let request = ImageGenerationRequest {
                     model: model_clone,
                     prompt: full_prompt,
-                    n: 1,
-                    size: None,
+                    n: None,  // 用户可以通过extra_params指定生成数量
+                    size: None,  // 用户可以通过extra_params指定图片尺寸
                     extra_params: params_clone,
                 };
                 

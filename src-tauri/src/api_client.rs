@@ -12,7 +12,8 @@ use tracing;
 pub struct ImageGenerationRequest {
     pub model: String,
     pub prompt: String,
-    pub n: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub n: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub size: Option<String>,
     #[serde(flatten)]
