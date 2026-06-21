@@ -687,7 +687,13 @@ function App() {
               min={30}
               max={600}
               value={timeoutSecs}
-              onChange={(value) => setTimeoutSecs(value || 180)}
+              onChange={(value) => {
+                if (value === null || value === undefined) {
+                  setTimeoutSecs(180);
+                } else {
+                  setTimeoutSecs(value);
+                }
+              }}
               style={{ width: '100%' }}
             />
           </div>

@@ -38,7 +38,7 @@ impl Default for AppConfig {
             model: None,
             common_params: Some("{}".to_string()),
             concurrency: 3,
-            timeout_secs: 60,
+            timeout_secs: 180,
             max_retries: 3,
         }
     }
