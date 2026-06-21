@@ -746,7 +746,7 @@ function App() {
             placeholder="请选择要生图的项目"
             value={selectedProjectId}
             onChange={handleProjectSelect}
-            style={{ flex: 1 }}
+            style={{ width: '100%' }}
             options={projects.map(p => ({ label: p.name, value: p.id }))}
             disabled={projects.length === 0}
           />
