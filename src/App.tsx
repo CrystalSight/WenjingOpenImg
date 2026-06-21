@@ -367,8 +367,6 @@ function App() {
       const payload = {
         model: selectedModel,
         prompt: fullPrompt,
-        n: 1,
-        size: "1024x1024",
         ...extraParams
       };
       
@@ -645,7 +643,7 @@ function App() {
           <div>
             <label style={{ display: 'block', marginBottom: 8 }}>API地址:</label>
             <Input
-              placeholder="例如: https://api.example.com/v1/images/generations"
+              placeholder="例如: https://api.example.com/v1"
               value={apiUrl}
               onChange={(e) => setApiUrl(e.target.value)}
             />
