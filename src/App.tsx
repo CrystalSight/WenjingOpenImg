@@ -4,7 +4,7 @@ import { SettingOutlined, PlayCircleOutlined } from '@ant-design/icons';
 import zhCN from 'antd/locale/zh_CN';
 import { open } from '@tauri-apps/api/dialog';
 import { listen } from '@tauri-apps/api/event';
-import { getConfig, selectWenjingRoot } from './api/config';
+import { getConfig, updateConfig, selectWenjingRoot } from './api/config';
 import { getProjects, getShots, getShotFullPrompt } from './api/database';
 import { backupProject } from './api/project';
 import { fetchModels, testApiConnection, type TestConnectionResult } from './api/api_client';
@@ -15,6 +15,7 @@ import type { AppConfig, ProjectInfo } from './types';
 
 const { Title, Text } = Typography;
 const { Sider, Content } = Layout;
+
 
 function App() {
   const [config, setConfig] = useState<AppConfig | null>(null);
@@ -83,6 +84,7 @@ function App() {
   const [selectedPreset, setSelectedPreset] = useState<string>('');
 
   const hasLoadedProjects = useRef(false);
+  const isInitialLoad = useRef(true);
 
   useEffect(() => {
     loadConfig();
@@ -114,10 +116,62 @@ function App() {
     try {
       const cfg = await getConfig();
       setConfig(cfg);
+
+      // 加载保存的API配置
+      if (cfg.api_url) {
+        setApiUrl(cfg.api_url);
+      }
+      if (cfg.model) {
+        setSelectedModel(cfg.model);
+      }
+      if (cfg.common_params) {
+        setCustomParams(cfg.common_params);
+      }
+      setConcurrency(cfg.concurrency);
+      setTimeoutSecs(cfg.timeout_secs);
+      setMaxRetries(cfg.max_retries);
+
+      // 标记初始加载完成
+      setTimeout(() => {
+        isInitialLoad.current = false;
+      }, 100);
     } catch {
       message.error('加载配置失败');
     }
   };
+
+  // 自动保存配置(使用防抖)
+  useEffect(() => {
+    // 初始加载时不触发保存
+    if (isInitialLoad.current) {
+      return;
+    }
+
+    // 防抖:延迟500ms执行保存
+    const timer = setTimeout(async () => {
+      if (!config) return;
+
+      try {
+        const updatedConfig: AppConfig = {
+          ...config,
+          api_url: apiUrl || undefined,
+          model: selectedModel || undefined,
+          common_params: customParams || '{}',
+          concurrency,
+          timeout_secs: timeoutSecs,
+          max_retries: maxRetries,
+        };
+
+        await updateConfig(updatedConfig);
+        setConfig(updatedConfig);
+        console.log('配置已自动保存');
+      } catch (error) {
+        console.error('自动保存配置失败:', error);
+      }
+    }, 500);
+
+    return () => clearTimeout(timer);
+  }, [apiUrl, apiKey, selectedModel, customParams, concurrency, timeoutSecs, maxRetries]);
 
   // 自动加载项目
   const autoLoadProjects = async () => {
@@ -496,6 +550,41 @@ function App() {
           </Button>
         </Space>
       </Card>
+
+      <Card title="配置方案管理">
+        <Space direction="vertical" style={{ width: '100%' }} size="middle">
+          <div>
+            <label style={{ display: 'block', marginBottom: 8 }}>方案名称:</label>
+            <Input
+              placeholder="输入新方案名称或从下拉列表选择"
+              value={selectedPreset}
+              onChange={(e) => setSelectedPreset(e.target.value)}
+            />
+          </div>
+          <div>
+            <label style={{ display: 'block', marginBottom: 8 }}>或从已有方案选择:</label>
+            <Select
+              placeholder="选择已有方案"
+              value={selectedPreset}
+              onChange={(value) => setSelectedPreset(value)}
+              style={{ width: '100%' }}
+              options={configPresets.map(name => ({ label: name, value: name }))}
+            />
+          </div>
+          
+          <Space>
+            <Button onClick={handleSavePreset} disabled={!selectedPreset}>
+              保存当前配置为方案
+            </Button>
+            <Button onClick={handleLoadPreset} disabled={!selectedPreset}>
+              加载选中方案
+            </Button>
+            <Button onClick={loadConfigPresets}>
+              刷新方案列表
+            </Button>
+          </Space>
+        </Space>
+      </Card>
       
       <Card title="API配置">
         <Space direction="vertical" style={{ width: '100%' }} size="middle">
@@ -568,34 +657,6 @@ function App() {
               </Text>
             )}
           </div>
-        </Space>
-      </Card>
-
-      <Card title="配置方案管理">
-        <Space direction="vertical" style={{ width: '100%' }} size="middle">
-          <div>
-            <label style={{ display: 'block', marginBottom: 8 }}>选择配置方案:</label>
-            <Select
-              placeholder="选择或输入新方案名称"
-              value={selectedPreset}
-              onChange={(value) => setSelectedPreset(value)}
-              style={{ width: '100%' }}
-              options={configPresets.map(name => ({ label: name, value: name }))}
-              showSearch
-            />
-          </div>
-          
-          <Space>
-            <Button onClick={handleSavePreset} disabled={!selectedPreset}>
-              保存当前配置为方案
-            </Button>
-            <Button onClick={handleLoadPreset} disabled={!selectedPreset}>
-              加载选中方案
-            </Button>
-            <Button onClick={loadConfigPresets}>
-              刷新方案列表
-            </Button>
-          </Space>
         </Space>
       </Card>
 
