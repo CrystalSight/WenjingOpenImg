@@ -388,7 +388,7 @@ function App() {
             }}>
               {fullPrompt}
             </pre><br/>
-            <Text strong>请求Payload:</Text><br/>
+            <Text strong>请求内容:</Text><br/>
             <pre style={{ 
               background: '#f5f5f5', 
               padding: 12, 
@@ -746,7 +746,7 @@ function App() {
           API请求预览
         </Button>
         <Text type="secondary" style={{ fontSize: 12, marginTop: 8, display: 'block' }}>
-          随机选取一个分镜,生成完整的API请求Payload供检查
+          随机选取一个分镜,生成完整的API请求内容供检查
         </Text>
       </Card>
     </Space>
