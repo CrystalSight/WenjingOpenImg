@@ -741,12 +741,12 @@ function App() {
   const renderGenerationSection = () => (
     <Space direction="vertical" size="large" style={{ width: '100%' }}>
       <Card title="选择项目">
-        <Space style={{ width: '100%', marginBottom: 8 }}>
+        <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
           <Select
             placeholder="请选择要生图的项目"
             value={selectedProjectId}
             onChange={handleProjectSelect}
-            style={{ width: '100%' }}
+            style={{ flex: 1 }}
             options={projects.map(p => ({ label: p.name, value: p.id }))}
             disabled={projects.length === 0}
           />
@@ -757,7 +757,7 @@ function App() {
           >
             刷新项目
           </Button>
-        </Space>
+        </div>
         {projects.length === 0 && config?.wenjing_root && (
           <Text type="secondary">未找到项目，请确认工作区配置正确后点击“刷新项目”</Text>
         )}
