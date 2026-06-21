@@ -28,7 +28,7 @@ fn get_presets_dir() -> Result<PathBuf, String> {
 /// 保存配置方案
 pub fn save_preset(preset: &ConfigPreset) -> Result<(), String> {
     let presets_dir = get_presets_dir()?;
-    let file_name = format!("{}.json", preset.name.replace(" ", "_"));
+    let file_name = format!("config_{}.json", preset.name.replace(" ", "_"));
     let file_path = presets_dir.join(&file_name);
 
     let json = serde_json::to_string_pretty(preset)
@@ -43,7 +43,7 @@ pub fn save_preset(preset: &ConfigPreset) -> Result<(), String> {
 /// 加载配置方案
 pub fn load_preset(name: &str) -> Result<ConfigPreset, String> {
     let presets_dir = get_presets_dir()?;
-    let file_name = format!("{}.json", name.replace(" ", "_"));
+    let file_name = format!("config_{}.json", name.replace(" ", "_"));
     let file_path = presets_dir.join(&file_name);
 
     if !file_path.exists() {
@@ -68,12 +68,28 @@ pub fn list_presets() -> Result<Vec<String>, String> {
     for entry in entries {
         let entry = entry.map_err(|e| format!("读取目录项失败: {}", e))?;
         if let Some(file_name) = entry.file_name().to_str() {
-            if file_name.ends_with(".json") {
-                names.push(file_name[..file_name.len() - 5].replace("_", " ").to_string());
+            if let Some(stem) = file_name.strip_prefix("config_").and_then(|s| s.strip_suffix(".json")) {
+                names.push(stem.replace("_", " ").to_string());
             }
         }
     }
 
     names.sort();
     Ok(names)
+}
+
+/// 删除配置方案
+pub fn delete_preset(name: &str) -> Result<(), String> {
+    let presets_dir = get_presets_dir()?;
+    let file_name = format!("config_{}.json", name.replace(" ", "_"));
+    let file_path = presets_dir.join(&file_name);
+
+    if !file_path.exists() {
+        return Err(format!("配置方案 '{}' 不存在", name));
+    }
+
+    fs::remove_file(&file_path)
+        .map_err(|e| format!("删除配置文件失败: {}", e))?;
+
+    Ok(())
 }

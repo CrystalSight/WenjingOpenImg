@@ -158,7 +158,7 @@ fn get_table_columns(conn: &Connection, table_name: &str) -> Result<Vec<ColumnIn
     Ok(result)
 }
 
-/// 获取所有项目列表
+/// 从数据库查询所有项目(仅数据库数据)
 pub fn list_projects(db_path: &PathBuf) -> Result<Vec<ProjectInfo>, String> {
     let conn = open_database(db_path)?;
     
@@ -188,6 +188,108 @@ pub fn list_projects(db_path: &PathBuf) -> Result<Vec<ProjectInfo>, String> {
         result.push(project_result.map_err(|e| format!("读取项目数据失败: {}", e))?);
     }
     
+    Ok(result)
+}
+
+/// 通过文件系统扫描 + 数据库联合查询项目列表
+/// 1. 从Settings表读取工作区路径
+/// 2. 扫描工作区/zuopin目录获取文件夹
+/// 3. 与数据库Videos表按CreateTime匹配
+pub fn query_projects(db_path: &PathBuf) -> Result<Vec<ProjectInfo>, String> {
+    let conn = open_database(db_path)?;
+
+    // 读取工作区路径:优先"设置-WORK-文件夹",回退"设置-工作区",最终回退到db所在目录的父目录
+    let workspace = {
+        let mut stmt = conn.prepare("SELECT Data FROM Settings WHERE Name = ?")
+            .map_err(|e| format!("查询工作区配置失败: {}", e))?;
+
+        let ws: Option<String> = stmt.query_row(["设置-WORK-文件夹"], |row| {
+            row.get::<_, Option<String>>(0)
+        }).optional()
+        .map_err(|e| format!("读取工作区数据失败: {}", e))?
+        .flatten();
+
+        if let Some(path) = ws {
+            PathBuf::from(path)
+        } else {
+            let ws2: Option<String> = stmt.query_row(["设置-工作区"], |row| {
+                row.get::<_, Option<String>>(0)
+            }).optional()
+            .map_err(|e| format!("读取工作区数据失败: {}", e))?
+            .flatten();
+
+            if let Some(path) = ws2 {
+                PathBuf::from(path)
+            } else {
+                // 回退到数据库所在目录的父目录(即wenjing_root)
+                db_path.parent()
+                    .unwrap_or(db_path.as_path())
+                    .to_path_buf()
+            }
+        }
+    };
+
+    let zuopin_dir = workspace.join("zuopin");
+
+    // 扫描文件系统获取项目文件夹名
+    let folder_names: Vec<String> = if zuopin_dir.exists() {
+        std::fs::read_dir(&zuopin_dir)
+            .map_err(|e| format!("读取zuopin目录失败: {}", e))?
+            .filter_map(|entry| {
+                entry.ok().and_then(|e| {
+                    if e.path().is_dir() {
+                        e.file_name().to_str().map(String::from)
+                    } else {
+                        None
+                    }
+                })
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    // 查询数据库所有项目
+    let mut stmt = conn.prepare(
+        "SELECT v.ID, v.Name, v.CreateTime,
+         COUNT(DISTINCT a.ID) as shot_count
+         FROM Videos v
+         LEFT JOIN Articles a ON v.ID = a.IDVideo
+         GROUP BY v.ID"
+    ).map_err(|e| format!("查询项目列表失败: {}", e))?;
+
+    let all_projects: Vec<(i64, String, String, i64)> = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, i64>(3)?,
+        ))
+    })
+    .map_err(|e| format!("读取项目数据失败: {}", e))?
+    .filter_map(|r| r.ok())
+    .collect();
+
+    // 匹配:将CreateTime "2026-06-13 21:17:07" 转为前缀 "2026-06-13_21_17_07"
+    // 文件夹名格式: "2026-06-13_21_17_07_5"
+    let mut result = Vec::new();
+    for (id, name, create_time, shot_count) in &all_projects {
+        let prefix = create_time.replace(' ', "_").replace(':', "_");
+        let matched = folder_names.iter().any(|f| f.starts_with(&prefix));
+        if matched {
+            result.push(ProjectInfo {
+                id: *id,
+                name: name.clone(),
+                created_at: create_time.clone(),
+                shot_count: *shot_count,
+                image_count: 0,
+            });
+        }
+    }
+
+    // 按创建时间倒序排列
+    result.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+
     Ok(result)
 }
 

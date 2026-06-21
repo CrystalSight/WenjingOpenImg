@@ -9,7 +9,7 @@ mod batch_generator;
 mod config_presets;
 
 use config::{AppConfig, load_config, save_config, validate_wenjing_root};
-use database::{explore_database, list_projects, list_shots, get_project_prompts, get_shot_full_prompt};
+use database::{explore_database, query_projects, list_shots, get_project_prompts, get_shot_full_prompt};
 use project::{get_project_detail, check_shot_exists};
 use api_client::{ApiClient, ImageGenerationRequest};
 use batch_generator::{BatchGenerator, TaskUpdate};
@@ -51,11 +51,11 @@ fn explore_db(wenjing_root: String) -> Result<Vec<database::TableInfo>, String> 
     explore_database(&db_path)
 }
 
-/// 获取项目列表
+/// 获取项目列表(通过文件系统扫描 + 数据库联合查询)
 #[command]
 fn get_projects(wenjing_root: String) -> Result<Vec<database::ProjectInfo>, String> {
     let db_path = std::path::PathBuf::from(wenjing_root).join("aigc.sqlite");
-    list_projects(&db_path)
+    query_projects(&db_path)
 }
 
 /// 获取分镜列表
@@ -125,6 +125,12 @@ fn load_config_preset(name: String) -> Result<config_presets::ConfigPreset, Stri
 #[command]
 fn list_config_presets() -> Result<Vec<String>, String> {
     config_presets::list_presets()
+}
+
+/// 删除配置方案
+#[command]
+fn delete_config_preset(name: String) -> Result<(), String> {
+    config_presets::delete_preset(&name)
 }
 
 /// 项目预检结果
@@ -387,6 +393,7 @@ fn main() {
             save_config_preset,
             load_config_preset,
             list_config_presets,
+            delete_config_preset,
             inspect_project,
             fetch_models,
             test_api_connection,

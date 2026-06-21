@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
-import { Button, message, Space, Card, Typography, ConfigProvider, Input, Select, Modal, Layout, Menu } from 'antd';
-import { SettingOutlined, PlayCircleOutlined } from '@ant-design/icons';
+import { Button, message, Space, Card, Typography, ConfigProvider, Input, Select, Modal, Layout, Menu, InputNumber } from 'antd';
+import { SettingOutlined, PlayCircleOutlined, ReloadOutlined } from '@ant-design/icons';
 import zhCN from 'antd/locale/zh_CN';
 import { open } from '@tauri-apps/api/dialog';
 import { listen } from '@tauri-apps/api/event';
@@ -9,7 +9,7 @@ import { getProjects, getShots, getShotFullPrompt } from './api/database';
 import { backupProject } from './api/project';
 import { fetchModels, testApiConnection, type TestConnectionResult } from './api/api_client';
 import { startBatchGeneration } from './api/batch';
-import { saveConfigPreset, loadConfigPreset, listConfigPresets } from './api/preset';
+import { saveConfigPreset, loadConfigPreset, listConfigPresets, deleteConfigPreset } from './api/preset';
 import { inspectProject } from './api/inspection';
 import type { AppConfig, ProjectInfo } from './types';
 
@@ -180,7 +180,7 @@ function App() {
     return () => clearTimeout(timer);
   }, [apiUrl, apiKey, selectedModel, customParams, concurrency, timeoutSecs, maxRetries]);
 
-  // 自动加载项目
+  // 加载项目列表(通过文件系统扫描 + 数据库联合查询)
   const autoLoadProjects = async () => {
     if (!config?.wenjing_root) return;
     
@@ -188,9 +188,12 @@ function App() {
       const loaded = await getProjects(config.wenjing_root);
       setProjects(loaded);
       if (loaded.length > 0) {
-        message.info(`已自动加载 ${loaded.length} 个项目`);
+        message.info(`已加载 ${loaded.length} 个项目`);
+      } else {
+        message.info('未找到匹配的项目，请确认工作区配置正确');
       }
     } catch (error) {
+      message.error(`加载项目失败: ${error}`);
       console.error('自动加载项目失败:', error);
     }
   };
@@ -246,7 +249,20 @@ function App() {
         const isValid = await selectWenjingRoot(selected);
         if (isValid) {
           message.success('文镜根目录设置成功');
-          loadConfig();
+          await loadConfig();
+          // 重新加载项目列表
+          hasLoadedProjects.current = false;
+          try {
+            const loaded = await getProjects(selected);
+            setProjects(loaded);
+            if (loaded.length > 0) {
+              message.info(`已加载 ${loaded.length} 个项目`);
+            } else {
+              message.info('未找到匹配的项目，请确认工作区配置正确');
+            }
+          } catch (error) {
+            message.error(`加载项目失败: ${error}`);
+          }
         } else {
           message.error('请选择包含 aigc.sqlite 和 zuopin 文件夹的文镜根目录');
         }
@@ -362,7 +378,7 @@ function App() {
         width: 600,
         content: (
           <div>
-            <Text strong>选中的分镜:</Text> 第{randomShot.order}个 (ID: {randomShot.id})<br/><br/>
+            <Text strong>选中的分镜:</Text> 第{randomIndex + 1}个 / 共{shots.length}个 (ID: {randomShot.id})<br/><br/>
             <Text strong>完整提示词:</Text><br/>
             <pre style={{ 
               background: '#f5f5f5', 
@@ -515,6 +531,9 @@ function App() {
     try {
       await saveConfigPreset({
         name: selectedPreset,
+        api_url: apiUrl || undefined,
+        api_key: apiKey || undefined,
+        model: selectedModel || undefined,
         concurrency,
         timeout_secs: timeoutSecs,
         max_retries: maxRetries,
@@ -536,6 +555,9 @@ function App() {
     
     try {
       const preset = await loadConfigPreset(selectedPreset);
+      setApiUrl(preset.api_url || '');
+      setApiKey(preset.api_key || '');
+      setSelectedModel(preset.model || '');
       setConcurrency(preset.concurrency);
       setTimeoutSecs(preset.timeout_secs);
       setMaxRetries(preset.max_retries);
@@ -544,6 +566,28 @@ function App() {
     } catch (error) {
       message.error(`加载配置方案失败: ${error}`);
     }
+  };
+
+  const handleDeletePreset = async () => {
+    if (!selectedPreset) {
+      message.warning('请选择要删除的方案');
+      return;
+    }
+    
+    Modal.confirm({
+      title: '确认删除',
+      content: `确定要删除配置方案 '${selectedPreset}' 吗?`,
+      onOk: async () => {
+        try {
+          await deleteConfigPreset(selectedPreset);
+          message.success(`配置方案 '${selectedPreset}' 已删除`);
+          setSelectedPreset('');
+          loadConfigPresets();
+        } catch (error) {
+          message.error(`删除配置方案失败: ${error}`);
+        }
+      },
+    });
   };
 
   // 渲染配置区域
@@ -585,6 +629,9 @@ function App() {
             </Button>
             <Button onClick={handleLoadPreset} disabled={!selectedPreset}>
               加载选中方案
+            </Button>
+            <Button onClick={handleDeletePreset} disabled={!selectedPreset} danger>
+              删除选中方案
             </Button>
             <Button onClick={loadConfigPresets}>
               刷新方案列表
@@ -634,6 +681,17 @@ function App() {
             </div>
           )}
           
+          <div>
+            <label style={{ display: 'block', marginBottom: 8 }}>超时时间(秒):</label>
+            <InputNumber
+              min={30}
+              max={600}
+              value={timeoutSecs}
+              onChange={(value) => setTimeoutSecs(value || 180)}
+              style={{ width: '100%' }}
+            />
+          </div>
+
           <Button
             onClick={handleTestConnection}
             loading={isTestingConnection}
@@ -683,18 +741,25 @@ function App() {
   const renderGenerationSection = () => (
     <Space direction="vertical" size="large" style={{ width: '100%' }}>
       <Card title="选择项目">
-        <Select
-          placeholder="请选择要生图的项目"
-          value={selectedProjectId}
-          onChange={handleProjectSelect}
-          style={{ width: '100%' }}
-          options={projects.map(p => ({ label: p.name, value: p.id }))}
-          disabled={projects.length === 0}
-        />
-        {projects.length === 0 && config?.wenjing_root && (
-          <Button onClick={autoLoadProjects} style={{ marginTop: 8 }}>
-            重新加载项目
+        <Space style={{ width: '100%', marginBottom: 8 }}>
+          <Select
+            placeholder="请选择要生图的项目"
+            value={selectedProjectId}
+            onChange={handleProjectSelect}
+            style={{ flex: 1 }}
+            options={projects.map(p => ({ label: p.name, value: p.id }))}
+            disabled={projects.length === 0}
+          />
+          <Button
+            icon={<ReloadOutlined />}
+            onClick={autoLoadProjects}
+            disabled={!config?.wenjing_root}
+          >
+            刷新项目
           </Button>
+        </Space>
+        {projects.length === 0 && config?.wenjing_root && (
+          <Text type="secondary">未找到项目，请确认工作区配置正确后点击“刷新项目”</Text>
         )}
       </Card>
       

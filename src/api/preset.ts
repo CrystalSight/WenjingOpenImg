@@ -22,3 +22,7 @@ export async function loadConfigPreset(name: string): Promise<ConfigPreset> {
 export async function listConfigPresets(): Promise<string[]> {
   return invoke('list_config_presets');
 }
+
+export async function deleteConfigPreset(name: string): Promise<void> {
+  return invoke('delete_config_preset', { name });
+}
